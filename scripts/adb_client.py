@@ -9,6 +9,7 @@ configured TV call require_config() themselves.
 import json
 import sys
 import time
+import shlex
 from pathlib import Path
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / 'config.json'
@@ -19,7 +20,8 @@ def _load_config() -> dict:
         try:
             return json.loads(_CONFIG_PATH.read_text())
         except Exception:
-            pass
+            # Don't abort import, but make the parsing problem visible to stderr
+            print(f"WARNING: failed to parse {_CONFIG_PATH}; using defaults.", file=sys.stderr)
     return {}
 
 
@@ -52,8 +54,14 @@ def require_config() -> None:
 
 def load_signer():
     from adb_shell.auth.sign_pythonrsa import PythonRSASigner
-    priv = KEY_PATH.read_text()
-    pub  = KEY_PATH.with_suffix('.pub').read_text()
+    priv_path = KEY_PATH
+    pub_path = KEY_PATH.with_suffix('.pub')
+    if not priv_path.exists():
+        raise FileNotFoundError(f"ADB private key not found at {priv_path}. Run './install' or generate ADB keys.")
+    if not pub_path.exists():
+        raise FileNotFoundError(f"ADB public key not found at {pub_path}. Run './install' or generate ADB keys.")
+    priv = priv_path.read_text()
+    pub  = pub_path.read_text()
     return PythonRSASigner(pub, priv)
 
 
@@ -160,25 +168,29 @@ class TVClient:
         Falls back to ASCII-only mode if LeanKeyboard is not available.
         """
         try:
-            # Try to activate LeanKeyboard IME
-            result = self.shell("ime set com.leanlauncher.leankeybord/.LeanKeyboardService")
-            if "Error" not in result:
-                # LeanKeyboard is available - send with Unicode support
-                escaped = text.replace("'", "\\'")
-                self.shell(f"input text '{escaped}'")
+            # Try to activate LeanKeyboard IME (fixed package name)
+            result = self.shell("ime set com.leanlauncher.leankeyboard/.LeanKeyboardService")
+            # If the command did not return an Error, attempt to send text with proper shell quoting
+            if "Error" not in result and "Exception" not in result:
+                quoted = shlex.quote(text)
+                self.shell(f"input text {quoted}")
                 return
         except Exception:
+            # Ignore IME activation errors and fall back
             pass
-        
+
         # Fallback: ASCII-only mode (original behavior)
         # Uses $'\\xNN' ANSI-C quoting so that quotes, $, &, ; and other shell
         # metacharacters are passed through safely. Unicode (> 127) will be skipped.
         parts = []
         for ch in text:
             if ch == ' ':
-                parts.append('%s')
+                parts.append('\\x20')            # space as \x20
             elif ord(ch) < 128:
                 parts.append(f'\\x{ord(ch):02x}')
+        if not parts:
+            # nothing to send (all characters were non-ASCII); no-op
+            return
         escaped = "$'" + ''.join(parts) + "'"
         self.shell(f'input text {escaped}')
 
