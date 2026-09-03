@@ -154,12 +154,25 @@ class TVClient:
             self.key(231)
 
     def send_text(self, text: str) -> None:
-        """Send text to the focused input field (ASCII; all special chars handled).
-
-        Uses $'\\xNN' ANSI-C quoting so that quotes, $, &, ; and other shell
-        metacharacters are passed through safely.  Unicode (> 127) is not
-        supported by the Android `input text` command and will be skipped.
+        """Send text to the focused input field (supports Unicode via LeanKeyboard IME).
+        
+        LeanKeyboard must be installed on the TV for Unicode support.
+        Falls back to ASCII-only mode if LeanKeyboard is not available.
         """
+        try:
+            # Try to activate LeanKeyboard IME
+            result = self.shell("ime set com.leanlauncher.leankeybord/.LeanKeyboardService")
+            if "Error" not in result:
+                # LeanKeyboard is available - send with Unicode support
+                escaped = text.replace("'", "\\'")
+                self.shell(f"input text '{escaped}'")
+                return
+        except Exception:
+            pass
+        
+        # Fallback: ASCII-only mode (original behavior)
+        # Uses $'\\xNN' ANSI-C quoting so that quotes, $, &, ; and other shell
+        # metacharacters are passed through safely. Unicode (> 127) will be skipped.
         parts = []
         for ch in text:
             if ch == ' ':
